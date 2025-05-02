@@ -15,7 +15,6 @@ st.set_page_config(
 
 st.title("Resúmenes por Documento")
 
-# Diccionario de traducción ampliado para analysis_name y mensajes comunes
 translation_dict = {
     "Validate Issuer ID number": "Validar número de identificación del emisor",
     "Validate Client ID number": "Validar número de identificación del cliente",
@@ -103,11 +102,20 @@ if uploaded_file is not None:
 
             df['is_valid'] = df['is_valid'].apply(to_bool)
 
-            # Ordena facturas por número de validaciones fallidas
+            # Calcular número de validaciones fallidas por factura
             fail_counts = df[df['is_valid'] == False].groupby('doc_name').size().reset_index(name='fail_count')
             all_docs = pd.DataFrame({'doc_name': df['doc_name'].unique()})
             fail_counts = all_docs.merge(fail_counts, on='doc_name', how='left').fillna(0)
             fail_counts['fail_count'] = fail_counts['fail_count'].astype(int)
+
+            # Encontrar el máximo número de validaciones fallidas
+            max_fails = fail_counts['fail_count'].max() if not fail_counts.empty else 1
+
+            # Normalizar riesgo: máximo 98%
+            fail_counts['risk_score'] = fail_counts['fail_count'] / max_fails * 98 if max_fails > 0 else 0
+            fail_counts['risk_score'] = fail_counts['risk_score'].round(1)
+
+            # Ordenar facturas por número de validaciones fallidas
             sorted_doc_names = fail_counts.sort_values(['fail_count', 'doc_name'], ascending=[False, True])['doc_name'].tolist()
 
             selected_doc = st.selectbox(
@@ -116,11 +124,19 @@ if uploaded_file is not None:
             )
 
             document_data = df[df['doc_name'] == selected_doc]
+            total_validations = len(document_data)
+            failed_validations = document_data[document_data['is_valid'] == False]
+            failed_count = len(failed_validations)
+
+            # Obtener el riesgo normalizado para la factura seleccionada
+            risk_score = float(fail_counts.loc[fail_counts['doc_name'] == selected_doc, 'risk_score'].iloc[0])
 
             # --- Estructura en columnas ---
             col1, col2 = st.columns([1.2, 2])
 
             with col1:
+                st.markdown(f"<h4 style='color:red;'><span style='font-size:1.3em;'>🔴 Nivel de riesgo de la factura: <b>{risk_score:.1f}%</b></span></h4>", unsafe_allow_html=True)
+                st.progress(risk_score / 100)
                 st.subheader("Estadísticas de Validación")
                 valid_count = document_data['is_valid'].value_counts()
                 successful = valid_count.get(True, 0)
@@ -132,19 +148,23 @@ if uploaded_file is not None:
                 if na_count > 0:
                     st.markdown(f"<span style='color:orange'>⚠️ Validaciones sin resultado: {na_count}</span>", unsafe_allow_html=True)
 
-                if failed > 0:
-                    st.subheader("Validaciones Fallidas")
-                    failed_validations = document_data[document_data['is_valid'] == False]
-                    for _, row in failed_validations.iterrows():
-                        validation_type = translate(row['analysis_name']) if pd.notna(row['analysis_name']) else "Validación desconocida"
-                        message = translate(row['comments']) if pd.notna(row['comments']) else "Sin detalles"
-                        st.markdown(f"<b>{validation_type}:</b> {message}", unsafe_allow_html=True)
-
             with col2:
                 st.subheader("Resumen de Anomalías")
                 with st.spinner(f"Generando resumen para {selected_doc}..."):
                     summary = generate_summary(selected_doc, document_data)
                     st.markdown(summary)
+
+            # --- Separación visual para las validaciones fallidas ---
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.divider()
+            st.subheader("Validaciones Fallidas")
+            if failed > 0:
+                for _, row in failed_validations.iterrows():
+                    validation_type = translate(row['analysis_name']) if pd.notna(row['analysis_name']) else "Validación desconocida"
+                    message = translate(row['comments']) if pd.notna(row['comments']) else "Sin detalles"
+                    st.markdown(f"<b>{validation_type}:</b> {message}", unsafe_allow_html=True)
+            else:
+                st.markdown("No hay validaciones fallidas para esta factura.")
 
     except Exception as e:
         st.error(f"Error al procesar el archivo: {str(e)}")
