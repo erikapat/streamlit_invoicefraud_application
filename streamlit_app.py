@@ -8,12 +8,12 @@ import io
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 st.set_page_config(
-    page_title="Resúmenes por Documento",
+    page_title="Análisis de Fraude",
     page_icon="🔍",
     layout="wide"
 )
 
-st.title("Resúmenes por Documento")
+st.title("Análisis de Fraude")
 
 translation_dict = {
     "Validate Issuer ID number": "Validar número de identificación del emisor",
