@@ -7,6 +7,7 @@ import os
 import json
 import subprocess
 from pathlib import Path
+from PIL import Image  # <-- Add this import for image support
 
 # Leer la clave de OpenAI desde secrets.toml
 openai.api_key = st.secrets["OPENAI_API_KEY"]
@@ -35,14 +36,12 @@ translation_dict = {
     "Multiple languages detected": "Se detectaron múltiples idiomas",
 }
 
-
 def translate(text):
     if not isinstance(text, str):
         return text
     for eng, esp in translation_dict.items():
         text = text.replace(eng, esp)
     return text
-
 
 def generate_summary(doc_name, validation_data):
     failed_validations = validation_data[validation_data['is_valid'] == False]
@@ -80,13 +79,11 @@ Validaciones fallidas ({failed_count} de {total_validations}):
     except Exception as e:
         return f"Error al generar resumen: {str(e)}"
 
-
 def find_file_with_extension(folder_path, filename_without_ext):
     folder = Path(folder_path)
     for file_path in folder.rglob(f"{filename_without_ext}.*"):
         return str(file_path)
     return None
-
 
 # Selector de carpeta usando subprocess (solo local)
 def select_folder_via_subprocess():
@@ -100,7 +97,6 @@ def select_folder_via_subprocess():
     except Exception as e:
         st.error(f"Error al seleccionar carpeta: {str(e)}")
     return None
-
 
 # Interfaz principal
 uploaded_file = st.file_uploader("Carga un archivo CSV con resultados de validación", type=["csv"])
@@ -165,7 +161,6 @@ if uploaded_file:
             successful = valid_count.get(True, 0)
             failed = valid_count.get(False, 0)
             na_count = doc_data['is_valid'].isna().sum()
-
             st.markdown(f"<span style='color:green'>✅ Validaciones exitosas: {successful}</span>",
                         unsafe_allow_html=True)
             st.markdown(f"<span style='color:red'>❌ Validaciones fallidas: {failed}</span>", unsafe_allow_html=True)
@@ -182,22 +177,22 @@ if uploaded_file:
         # Validaciones fallidas
         st.divider()
         st.markdown("## ❌ Validaciones Fallidas")
-        #st.markdown(f"<span style='color:red'>❌ Validaciones fallidas: {failed}</span>", unsafe_allow_html=True)
         if not failed_validations.empty:
             for _, row in failed_validations.iterrows():
                 st.markdown(f"**{translate(row['analysis_name'])}**: {translate(row['comments'])}")
         else:
             st.markdown("No se encontraron validaciones fallidas")
 
-        # Mostrar factura relacionada
+        # Mostrar factura relacionada (ahora con soporte JFIF)
         if folder_path:
             st.divider()
             st.markdown("## 📑 Factura asociada")
             invoice_file = find_file_with_extension(folder_path, selected_doc)
             if invoice_file:
                 ext = os.path.splitext(invoice_file)[1].lower()
-                if ext in [".jpg", ".jpeg", ".png"]:
-                    st.image(invoice_file, use_container_width=True)
+                if ext in [".jpg", ".jpeg", ".png", ".jfif"]:
+                    img = Image.open(invoice_file)
+                    st.image(img, caption=os.path.basename(invoice_file), use_container_width=True)
                 elif ext == ".pdf":
                     with open(invoice_file, "rb") as f:
                         st.download_button("Descargar PDF", f, file_name=os.path.basename(invoice_file))
