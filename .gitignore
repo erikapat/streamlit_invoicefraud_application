@@ -176,3 +176,4 @@ cython_debug/
 .toml
 .streamlit/secrets.toml
 .env
+*.env

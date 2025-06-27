@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-##streamlit run streamlit_app_test.py
+# streamlit run streamlit_app_test.py
 import streamlit as st
 import pandas as pd
 import openai
 import io
 import os
-import json
 import subprocess
 from pathlib import Path
-from PIL import Image  # <-- Add this import for image support
+from PIL import Image
 
 # Leer la clave de OpenAI desde secrets.toml
 openai.api_key = st.secrets["OPENAI_API_KEY"]
@@ -116,55 +115,77 @@ if uploaded_file:
         delimiter = ';' if ';' in content.split('\n')[0] else ','
         df = pd.read_csv(io.StringIO(content), delimiter=delimiter)
 
+        if 'analysis_score' not in df.columns:
+            st.error("La columna 'analysis_score' no está presente en el archivo cargado.")
+            st.stop()
+
         required_columns = ['doc_name', 'is_valid', 'comments', 'analysis_name']
         if missing := [col for col in required_columns if col not in df.columns]:
             st.error(f"Faltan columnas: {', '.join(missing)}")
             st.stop()
 
-        df['is_valid'] = df['is_valid'].apply(lambda x: x if pd.isna(x) else str(x).lower() == 'true')
+        # Normalizar is_valid
+        df['is_valid'] = df['is_valid'].apply(
+            lambda x: True if str(x).lower() == 'true'
+            else False if str(x).lower() == 'false'
+            else pd.NA
+        )
 
-        fail_counts = (df[df['is_valid'] == False]
-                       .groupby('doc_name').size()
-                       .reset_index(name='fail_count'))
-        all_docs = pd.DataFrame({'doc_name': df['doc_name'].unique()})
-        fail_counts = all_docs.merge(fail_counts, on='doc_name', how='left').fillna(0)
-        max_fails = fail_counts['fail_count'].max() or 1
-        fail_counts['risk_score'] = (fail_counts['fail_count'] / max_fails * 98).round(1)
+        # Preparar doc_info con todos los documentos (aunque no tengan fallos)
+        doc_info_all = df.groupby('doc_name').agg({
+            'doc_classification': 'first'
+        }).reset_index()
 
-        sorted_docs = fail_counts.sort_values(['fail_count', 'doc_name'],
-                                              ascending=[False, True])['doc_name'].tolist()
+        df_failed = df[(df['is_valid'] == False) & (df['analysis_score'] > 0)]
+        doc_scores = df_failed.groupby('doc_name').agg({
+            'analysis_score': 'mean'
+        }).reset_index().rename(columns={'analysis_score': 'avg_score'})
+        fail_counts = df[df['is_valid'] == False].groupby('doc_name').size().reset_index(name='n_failed')
+
+        doc_info = doc_info_all.merge(doc_scores, on='doc_name', how='left').merge(fail_counts, on='doc_name', how='left')
+        doc_info['avg_score'] = doc_info['avg_score'].fillna(0)
+        doc_info['n_failed'] = doc_info['n_failed'].fillna(0)
+
+        doc_info = doc_info.sort_values(by=['avg_score', 'n_failed'], ascending=[False, False])
+        sorted_docs = doc_info['doc_name'].tolist()
+
+        if not sorted_docs:
+            st.warning("⚠️ No hay facturas con validaciones fallidas y score positivo.")
+            st.dataframe(df.head())  # Para debug
+            st.stop()
 
         selected_doc = st.selectbox(
             "Selecciona la factura a analizar:",
             options=sorted_docs,
-            format_func=lambda x: f"{x} (Riesgo: {fail_counts.loc[fail_counts['doc_name'] == x, 'risk_score'].iloc[0]}%)"
+            format_func=lambda x: f"{x} - {doc_info.loc[doc_info['doc_name'] == x, 'doc_classification'].iloc[0]} (Riesgo: {round(doc_info.loc[doc_info['doc_name'] == x, 'avg_score'].iloc[0], 1)}%)"
         )
 
         doc_data = df[df['doc_name'] == selected_doc]
-        risk_score = fail_counts.loc[fail_counts['doc_name'] == selected_doc, 'risk_score'].iloc[0]
-        failed_validations = doc_data[doc_data['is_valid'] == False]
+        risk_score = doc_data[doc_data['is_valid'] == False]['analysis_score'].mean()
 
         col1, col2 = st.columns([1.2, 2])
 
         with col1:
-            # Mostrar clasificación del documento
-            classification = doc_data['doc_classification'].iloc[
-                0] if 'doc_classification' in doc_data.columns else "No disponible"
+            classification = doc_data['doc_classification'].iloc[0] if 'doc_classification' in doc_data.columns else "No disponible"
             st.markdown(f"### 🗂️ Tipo de documento: **{classification}**")
 
-            st.markdown(f"## 🔴 Nivel de riesgo: **{risk_score}%**")
-            st.progress(risk_score / 100)
+            if risk_score is not None:
+                st.markdown(f"## 🔴 Nivel de riesgo: **{round(risk_score, 1)}%**")
+                st.progress(min(max(risk_score / 100, 0), 1))
+            else:
+                st.markdown("## 🔴 Nivel de riesgo: no disponible")
 
             st.markdown("### 📊 Estadísticas")
-            valid_count = doc_data['is_valid'].value_counts()
+            valid_count = doc_data['is_valid'].value_counts(dropna=False)
             successful = valid_count.get(True, 0)
             failed = valid_count.get(False, 0)
             na_count = doc_data['is_valid'].isna().sum()
-            st.markdown(f"<span style='color:green'>✅ Validaciones exitosas: {successful}</span>", unsafe_allow_html=True)
-            st.markdown(f"<span style='color:red'>❌ Validaciones fallidas: {failed}</span>", unsafe_allow_html=True)
-            if na_count > 0:
-                st.markdown(f"<span style='color:orange'>⚠️ Validaciones sin resultado: {na_count}</span>", unsafe_allow_html=True)
 
+            st.markdown(f"<span style='color:green'>✅ Validaciones exitosas: {successful}</span>",
+                        unsafe_allow_html=True)
+            st.markdown(f"<span style='color:red'>❌ Validaciones fallidas: {failed}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:orange'>⚠️ Validaciones sin resultado: {na_count}</span>",
+                        unsafe_allow_html=True)
 
         with col2:
             st.markdown("## 📄 Resumen de anomalías")
@@ -174,8 +195,9 @@ if uploaded_file:
 
         st.divider()
         st.markdown("## ❌ Validaciones Fallidas")
-        if not failed_validations.empty:
-            for _, row in failed_validations.iterrows():
+        failed_rows = doc_data[doc_data['is_valid'] == False]
+        if not failed_rows.empty:
+            for _, row in failed_rows.iterrows():
                 st.markdown(f"**{translate(row['analysis_name'])}**: {translate(row['comments'])}")
         else:
             st.markdown("No se encontraron validaciones fallidas")
@@ -201,22 +223,21 @@ if uploaded_file:
         st.divider()
         st.markdown("## 📊 Análisis Agregado de Fallos")
 
+        fail_counts = (df[df['is_valid'] == False]
+                       .groupby('doc_name')
+                       .size()
+                       .reset_index(name='fail_count'))
+
+        all_docs = df[['doc_name']].drop_duplicates()
+        fail_counts = all_docs.merge(fail_counts, on='doc_name', how='left').fillna(0)
+
         total_facturas = df['doc_name'].nunique()
         st.markdown(f"**Número total de facturas analizadas:** {total_facturas}")
-
-        facturas_con_fallos = fail_counts[fail_counts['fail_count'] > 0]
-        n_facturas_con_fallos = len(facturas_con_fallos)
-        n_con_1 = len(fail_counts[fail_counts['fail_count'] >= 1])
-        n_con_2 = len(fail_counts[fail_counts['fail_count'] >= 2])
-        n_con_3 = len(fail_counts[fail_counts['fail_count'] >= 3])
-        n_con_4 = len(fail_counts[fail_counts['fail_count'] >= 4])
-        n_total_fallos = int(fail_counts['fail_count'].sum())
-
-        st.markdown(f"**Número de facturas con al menos un fallo:** {n_facturas_con_fallos}")
-        st.markdown(f"**Número de facturas con ≥ 2 fallos:** {n_con_2}")
-        st.markdown(f"**Número de facturas con ≥ 3 fallos:** {n_con_3}")
-        st.markdown(f"**Número de facturas con ≥ 4 fallos:** {n_con_4}")
-        st.markdown(f"**Número total de fallos en todas las facturas:** {n_total_fallos}")
+        st.markdown(f"**Número de facturas con al menos un fallo:** {len(fail_counts[fail_counts['fail_count'] > 0])}")
+        st.markdown(f"**Número de facturas con ≥ 2 fallos:** {len(fail_counts[fail_counts['fail_count'] >= 2])}")
+        st.markdown(f"**Número de facturas con ≥ 3 fallos:** {len(fail_counts[fail_counts['fail_count'] >= 3])}")
+        st.markdown(f"**Número de facturas con ≥ 4 fallos:** {len(fail_counts[fail_counts['fail_count'] >= 4])}")
+        st.markdown(f"**Número total de fallos en todas las facturas:** {int(fail_counts['fail_count'].sum())}")
 
         fallos_por_analisis = (df[df['is_valid'] == False]
                                .groupby('analysis_name')
@@ -227,8 +248,8 @@ if uploaded_file:
         st.markdown("### Tabla de fallos por tipo de validación")
         st.dataframe(fallos_por_analisis, use_container_width=True)
 
-        st.markdown("### Histograma de validaciones fallidas por tipo")
         import matplotlib.pyplot as plt
+        st.markdown("### Histograma de validaciones fallidas por tipo")
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.bar(fallos_por_analisis['analysis_name'], fallos_por_analisis['n_fallos'], color='salmon')
         ax.set_title("Validaciones fallidas por tipo")
@@ -238,8 +259,6 @@ if uploaded_file:
         st.pyplot(fig)
 
         st.markdown("### Histograma de número de facturas según cantidad de fallos")
-
-        # Conteo de facturas por cantidad exacta de fallos
         distribucion_fallos = fail_counts['fail_count'].value_counts().sort_index()
         fig2, ax2 = plt.subplots(figsize=(8, 4))
         ax2.bar(distribucion_fallos.index.astype(int), distribucion_fallos.values, color='skyblue')
