@@ -16,12 +16,12 @@ openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # Page configuration
 st.set_page_config(
-    page_title="Global Sentinel - Document Forgery",
+    page_title="Argus - Document Forgery",
     page_icon="🔍",
     layout="wide"
 )
 
-st.title("Global Sentinel - Document Forgery")
+st.title("Argus - Document Forgery")
 
 # Translation dictionary (UI or validation name translations)
 translation_dict = {
