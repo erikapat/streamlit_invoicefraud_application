@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-# streamlit run streamlit_app_test.py
+# To run: streamlit run streamlit_app_test.py
+
 import streamlit as st
 import pandas as pd
 import openai
@@ -8,19 +9,21 @@ import os
 import subprocess
 from pathlib import Path
 from PIL import Image
+import matplotlib.pyplot as plt
 
-# Read OpenAI key from secrets.toml
+# Load OpenAI key from secrets.toml
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
+# Page configuration
 st.set_page_config(
-    page_title="Argus - Document Forgery",
+    page_title="Global Sentinel - Document Forgery",
     page_icon="🔍",
     layout="wide"
 )
 
-st.title("Argus - Document Forgery")
+st.title("Global Sentinel - Document Forgery")
 
-# Translation dictionary
+# Translation dictionary (UI or validation name translations)
 translation_dict = {
     "Validate Issuer ID number": "Validate issuer's ID number",
     "Validate Client ID number": "Validate client's ID number",
@@ -34,6 +37,27 @@ translation_dict = {
     "The extracted currency": "The extracted currency",
     "does not match with the document country currency": "does not match the document country's currency",
     "Multiple languages detected": "Multiple languages detected",
+}
+
+# English explanations for known validation failures
+explanation_dict = {
+    "Validate suspicious software in document Producer":
+        "The software used to create the document is unusual or suspicious. It may be a non-standard editing tool.",
+
+    "Validate duplicate invoice in the historical data":
+        "An invoice with the same number was found in the historical records. Check if it's a duplicate or an error.",
+
+    "Validate file size with respect to the historical data":
+        "The file size is very different from what’s expected based on previous documents. This may indicate tampering.",
+
+    "Validate producer metadata with respect to the historical data":
+        "The software used to create the document differs from what is normally used. This may be a sign of editing or artificial generation.",
+
+    "Validate issuer image keypoints against historical data":
+        "The issuer image in this document differs from the one that usually appears in correctly validated invoices. It may have been modified or replaced.",
+
+    "Validate number of images in pdf against historical data":
+        "The number of images in the PDF does not match what is typical. This could indicate an alteration."
 }
 
 def translate(text):
@@ -55,14 +79,14 @@ def generate_summary(doc_name, validation_data):
 You are an expert in invoice fraud detection. Analyze the following validation results 
 for invoice '{doc_name}' and generate a concise summary in English to help the user understand:
 
-- Elements requiring manual review (brief and specific list)
+- Items that require manual review (brief and clear list)
 - Potential risks or fraud indicators
 
-Failed validations ({failed_count} out of {total_validations}):
+Failed validations ({failed_count} of {total_validations}):
 """
     for _, row in failed_validations.iterrows():
         validation_type = translate(row['analysis_name']) if pd.notna(row['analysis_name']) else "Unknown validation"
-        message = translate(row['comments']) if pd.notna(row['comments']) else "No additional details"
+        message = explanation_dict.get(validation_type, translate(row['comments']) if pd.notna(row['comments']) else "No additional details")
         prompt += f"\n• {validation_type}: {message}"
 
     try:
@@ -96,6 +120,7 @@ def select_folder_via_subprocess():
         st.error(f"Error selecting folder: {str(e)}")
     return None
 
+# Upload CSV
 uploaded_file = st.file_uploader("Upload a CSV file with validation results", type=["csv"])
 
 folder_path = ""
@@ -105,7 +130,7 @@ if st.button("📁 Select invoice folder"):
         st.session_state.folder_path = selected_path
         st.success(f"Selected folder: {selected_path}")
     else:
-        st.warning("No valid folder was selected")
+        st.warning("No valid folder selected")
 
 folder_path = st.session_state.get("folder_path", "")
 
@@ -116,7 +141,7 @@ if uploaded_file:
         df = pd.read_csv(io.StringIO(content), delimiter=delimiter)
 
         if 'analysis_score' not in df.columns:
-            st.error("The column 'analysis_score' is not present in the uploaded file.")
+            st.error("Missing column: 'analysis_score'")
             st.stop()
 
         required_columns = ['doc_name', 'is_valid', 'comments', 'analysis_name']
@@ -124,22 +149,16 @@ if uploaded_file:
             st.error(f"Missing columns: {', '.join(missing)}")
             st.stop()
 
-        # Normalize is_valid values
         df['is_valid'] = df['is_valid'].apply(
             lambda x: True if str(x).lower() == 'true'
             else False if str(x).lower() == 'false'
             else pd.NA
         )
 
-        # Prepare doc_info with all documents (even if no failed validations)
-        doc_info_all = df.groupby('doc_name').agg({
-            'doc_classification': 'first'
-        }).reset_index()
+        doc_info_all = df.groupby('doc_name').agg({'doc_classification': 'first'}).reset_index()
 
         df_failed = df[(df['is_valid'] == False) & (df['analysis_score'] > 0)]
-        doc_scores = df_failed.groupby('doc_name').agg({
-            'analysis_score': 'mean'
-        }).reset_index().rename(columns={'analysis_score': 'avg_score'})
+        doc_scores = df_failed.groupby('doc_name').agg({'analysis_score': 'mean'}).reset_index().rename(columns={'analysis_score': 'avg_score'})
         fail_counts = df[df['is_valid'] == False].groupby('doc_name').size().reset_index(name='n_failed')
 
         doc_info = doc_info_all.merge(doc_scores, on='doc_name', how='left').merge(fail_counts, on='doc_name', how='left')
@@ -150,8 +169,8 @@ if uploaded_file:
         sorted_docs = doc_info['doc_name'].tolist()
 
         if not sorted_docs:
-            st.warning("⚠️ No invoices found with failed validations and positive score.")
-            st.dataframe(df.head())  # For debug
+            st.warning("⚠️ No invoices with failed validations and positive score were found.")
+            st.dataframe(df.head())
             st.stop()
 
         selected_doc = st.selectbox(
@@ -173,22 +192,20 @@ if uploaded_file:
                 st.markdown(f"## 🔴 Risk level: **{round(risk_score, 1)}%**")
                 st.progress(min(max(risk_score / 100, 0), 1))
             else:
-                st.markdown("## 🔴 Risk level: not available")
+                st.markdown("## 🔴 Risk level: Not available")
 
-            st.markdown("### 📊 Statistics")
+            st.markdown("### 📊 Validation statistics")
             valid_count = doc_data['is_valid'].value_counts(dropna=False)
             successful = valid_count.get(True, 0)
             failed = valid_count.get(False, 0)
             na_count = doc_data['is_valid'].isna().sum()
 
-            st.markdown(f"<span style='color:green'>✅ Successful validations: {successful}</span>",
-                        unsafe_allow_html=True)
-            st.markdown(f"<span style='color:red'>❌ Failed validations: {failed}</span>", unsafe_allow_html=True)
-            st.markdown(f"<span style='color:orange'>⚠️ Validations with no result: {na_count}</span>",
-                        unsafe_allow_html=True)
+            st.markdown(f"<span style='color:green'>✅ Successful: {successful}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:red'>❌ Failed: {failed}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='color:orange'>⚠️ No result: {na_count}</span>", unsafe_allow_html=True)
 
         with col2:
-            st.markdown("## 📄 Anomaly Summary")
+            st.markdown("## 📄 AI-generated anomaly summary")
             with st.spinner("Generating summary with AI..."):
                 summary = generate_summary(selected_doc, doc_data)
                 st.markdown(summary)
@@ -198,7 +215,9 @@ if uploaded_file:
         failed_rows = doc_data[doc_data['is_valid'] == False]
         if not failed_rows.empty:
             for _, row in failed_rows.iterrows():
-                st.markdown(f"**{translate(row['analysis_name'])}**: {translate(row['comments'])}")
+                validation = translate(row['analysis_name'])
+                comment = explanation_dict.get(validation, translate(row['comments']))
+                st.markdown(f"**{validation}**: {comment}")
         else:
             st.markdown("No failed validations found")
 
@@ -217,11 +236,10 @@ if uploaded_file:
                 else:
                     st.markdown(f"File found: `{invoice_file}` (unsupported format)")
             else:
-                st.warning("Invoice not found in the selected folder")
+                st.warning("Invoice file not found in the selected folder")
 
-        # 🔚 Aggregated analysis of failed validations
         st.divider()
-        st.markdown("## 📊 Aggregated Failure Analysis")
+        st.markdown("## 📊 Aggregated Validation Failures")
 
         fail_counts = (df[df['is_valid'] == False]
                        .groupby('doc_name')
@@ -232,12 +250,12 @@ if uploaded_file:
         fail_counts = all_docs.merge(fail_counts, on='doc_name', how='left').fillna(0)
 
         total_invoices = df['doc_name'].nunique()
-        st.markdown(f"**Total number of analyzed invoices:** {total_invoices}")
-        st.markdown(f"**Invoices with at least one failure:** {len(fail_counts[fail_counts['fail_count'] > 0])}")
+        st.markdown(f"**Total invoices analyzed:** {total_invoices}")
+        st.markdown(f"**Invoices with ≥ 1 failure:** {len(fail_counts[fail_counts['fail_count'] > 0])}")
         st.markdown(f"**Invoices with ≥ 2 failures:** {len(fail_counts[fail_counts['fail_count'] >= 2])}")
         st.markdown(f"**Invoices with ≥ 3 failures:** {len(fail_counts[fail_counts['fail_count'] >= 3])}")
         st.markdown(f"**Invoices with ≥ 4 failures:** {len(fail_counts[fail_counts['fail_count'] >= 4])}")
-        st.markdown(f"**Total number of validation failures:** {int(fail_counts['fail_count'].sum())}")
+        st.markdown(f"**Total validation failures:** {int(fail_counts['fail_count'].sum())}")
 
         failures_by_analysis = (df[df['is_valid'] == False]
                                 .groupby('analysis_name')
@@ -245,11 +263,10 @@ if uploaded_file:
                                 .reset_index(name='n_fallos')
                                 .sort_values('n_fallos', ascending=False))
         failures_by_analysis['analysis_name'] = failures_by_analysis['analysis_name'].apply(translate)
-        st.markdown("### Failures by Validation Type")
+        st.markdown("### Failure count by validation type")
         st.dataframe(failures_by_analysis, use_container_width=True)
 
-        import matplotlib.pyplot as plt
-        st.markdown("### Histogram: Failed Validations by Type")
+        st.markdown("### Histogram: Validation Failures by Type")
         fig, ax = plt.subplots(figsize=(10, 5))
         ax.bar(failures_by_analysis['analysis_name'], failures_by_analysis['n_fallos'], color='salmon')
         ax.set_title("Failed Validations by Type")
@@ -258,11 +275,11 @@ if uploaded_file:
         plt.xticks(rotation=45, ha='right')
         st.pyplot(fig)
 
-        st.markdown("### Histogram: Number of Invoices by Failure Count")
+        st.markdown("### Histogram: Invoices by Number of Failures")
         failure_distribution = fail_counts['fail_count'].value_counts().sort_index()
         fig2, ax2 = plt.subplots(figsize=(8, 4))
         ax2.bar(failure_distribution.index.astype(int), failure_distribution.values, color='skyblue')
-        ax2.set_title("Distribution of Failures per Invoice")
+        ax2.set_title("Failure Distribution per Invoice")
         ax2.set_xlabel("Number of Failures")
         ax2.set_ylabel("Number of Invoices")
         ax2.set_xticks(failure_distribution.index.astype(int))
